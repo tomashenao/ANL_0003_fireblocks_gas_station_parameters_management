@@ -26,20 +26,30 @@ iqr = q3 - q1
 # Calculate the upper outlier threshold
 upper_threshold = str(math.ceil(q3 + 1.5 * iqr))
 
-print(upper_threshold)
+url = "https://api.cryptoquant.com/v1/eth/network-data/fees-transaction?window=day&limit=30"
+data_list = requests.get(url, headers=headers).json()['result']['data']
+
+# Create a pandas DataFrame
+eth_daily_network_fees = pd.DataFrame(data_list).sort_values('date')
+
+fueling_amount = (18200/(3*30))*eth_daily_network_fees['fees_transaction_mean'].mean()
+fueling_threshold = fueling_amount/3
+
+fueling_amount = str(round(fueling_amount, 6))
+fueling_threshold = str(round(fueling_threshold, 6))
 
 api_secret = open('/Users/tomhenra/Documents/Wenia/Risk Management/Gas Station Management/ANL_0003_fireblocks_gas_station_parameters_management/sweeping_fireblocks.key', 'r').read()
 api_key = '567af12e-48cb-d54e-e4c0-27c7c5ba671d'
 #api_url = 'https://sandbox-api.fireblocks.io' 
 fireblocks = FireblocksSDK(api_secret, api_key)
 
-def set_auto_fuel(vault_account_id: str, auto_fuel: bool) -> str:
-    return fireblocks.set_auto_fuel(vault_account_id, auto_fuel)
+#def set_auto_fuel(vault_account_id: str, auto_fuel: bool) -> str:
+    #return fireblocks.set_auto_fuel(vault_account_id, auto_fuel)
 
-auto_fuel_status = set_auto_fuel("0", True)
+#auto_fuel_status = set_auto_fuel("0", True)
 
 def configure_gas_station(gas_threshold: str, gas_cap: str, max_gas_price: str):
     fireblocks.set_gas_station_configuration(gas_threshold=gas_threshold, gas_cap=gas_cap, max_gas_price=max_gas_price)
     
-gas_station_conf = configure_gas_station("0.005", "0.01", "20")
+gas_station_conf = configure_gas_station(fueling_threshold, fueling_amount, upper_threshold)
 
