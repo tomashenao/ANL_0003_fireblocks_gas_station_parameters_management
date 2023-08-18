@@ -11,29 +11,84 @@ from fireblocks_sdk import FireblocksSDK
 import math
 import os
 
-# Import last 30 days of Ethereum gas fees from CryptoQuant API
-#headers = {'Authorization': 'Bearer ' + '3G1so9dRH9LKYgx40m4Ygq7wImHbb4bU86gFA972'}
-#url = "https://api.cryptoquant.com/v1/eth/network-data/gas?window=day&limit=30"
-#data_list = requests.get(url, headers=headers).json()['result']['data']
+# CryptoQuant API access
+headers = {'Authorization': 'Bearer ' + '3G1so9dRH9LKYgx40m4Ygq7wImHbb4bU86gFA972'}
 
-print(os.path.exists("/Users/tomhenra/Documents/Wenia/Risk Management/Gas Station Management/ANL_0003_fireblocks_gas_station_parameters_management/polygon_daily_avg_gas_price.csv"))
+# Define token names and URLs
+token_data = {
+    'btc': {
+        'inflow_url': "https://api.cryptoquant.com/v1/btc/exchange-flows/inflow?exchange=all_exchange&window=day&from=20230101&limit=230",
+        'price_url': "https://api.cryptoquant.com/v1/btc/market-data/price-ohlcv?window=day&from=20230101&limit=230"
+    },
+    'eth': {
+        'inflow_url': "https://api.cryptoquant.com/v1/eth/exchange-flows/inflow?exchange=all_exchange&window=day&from=20230101&limit=230",
+        'price_url': "https://api.cryptoquant.com/v1/eth/market-data/price-ohlcv?window=day&from=20230101&limit=230"
+    },
+    'matic': {
+        'inflow_url': "https://api.cryptoquant.com/v1/erc20/exchange-flows/inflow?token=matic&exchange=all_exchange&window=day&from=20230101&limit=230",
+        'price_url': "https://api.cryptoquant.com/v1/erc20/market-data/price-ohlcv?token=matic&window=day&from=20230101&limit=230"
+    },
+    'usdc': {
+        'inflow_url': "https://api.cryptoquant.com/v1/stablecoin/exchange-flows/inflow?token=usdc&exchange=all_exchange&window=day&from=20230101&limit=230",
+        'price_url': "https://api.cryptoquant.com/v1/stablecoin/market-data/price-ohlcv?token=usdc&window=day&from=20230101&limit=230"
+    }
+}
+
+merged_dfs = []
+
+for token, urls in token_data.items():
+    # Fetch inflow data
+    inflow_data_list = requests.get(urls['inflow_url'], headers=headers).json()['result']['data']
+    inflow_df = pd.DataFrame(inflow_data_list).sort_values('date')[['date', 'inflow_total']]
+    
+    # Fetch price data
+    price_data_list = requests.get(urls['price_url'], headers=headers).json()['result']['data']
+    price_df = pd.DataFrame(price_data_list).sort_values('date')[['date', 'close']]
+    
+    # Merge data frames
+    merged_df = pd.merge(inflow_df, price_df, on='date', how='inner')
+    merged_df[f'{token}_inflow_total_usd'] = merged_df['inflow_total'] * merged_df['close']
+    merged_df = merged_df[['date', f'{token}_inflow_total_usd']]
+    
+    merged_dfs.append(merged_df)
+
+# Merge all token data frames
+merged_df = merged_dfs[0]
+for df in merged_dfs[1:]:
+    merged_df = pd.merge(merged_df, df, on='date', how='inner')
+
+# Set 'date' column as the index
+merged_df.set_index('date', inplace=True)
+
+# Calculate the daily share of inflows via the MATIC network and USDC v MATIC
+merged_df['matic_inflow_share'] = merged_df['matic_inflow_total_usd'] / merged_df.sum(axis=1)
+merged_df['matic_inflow_share_using_usdc'] = merged_df['usdc_inflow_total_usd'] / (merged_df['usdc_inflow_total_usd']+merged_df['matic_inflow_total_usd'])
 
 # Import csv with Polygon network fee data
 polygon_daily_avg_gas_prices = pd.DataFrame(pd.read_csv("/Users/tomhenra/Documents/Wenia/Risk Management/Gas Station Management/ANL_0003_fireblocks_gas_station_parameters_management/polygon_daily_avg_gas_price.csv"))
 
 # Calculate the IQR (Interquartile Range)
-q1 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.25)
-q3 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.75)
-iqr = q3 - q1
+#q1 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.25)
+#q3 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.75)
+#iqr = q3 - q1
 
-# Calculate the upper outlier threshold
-upper_threshold = str(math.ceil(q3 + 1.5 * iqr))
+# Import MATIC OHLCV prices from all exchanges from CryptoQuant API
+url = "https://api.cryptoquant.com/v1/erc20/market-data/price-ohlcv?token=matic&window=hour&limit=1"
+data_list = requests.get(url, headers=headers).json()['result']['data']
+
+# Calculate MATIC last hour close price
+matic_latest_close_price = float(pd.DataFrame(data_list).at[0, 'close'])
+# Calculate the upper outlier threshold (25USD / MATIC price). In this case we use 15USD which is consider the 
+# price of the labor hour of an operations worker and we turn this to MATIC Gwei.
+upper_threshold = str(math.ceil((15/matic_latest_close_price) * 1000000000))
+
+print(upper_threshold)
 
 # Calculate the fueling amount
 expected_crypto_deposits_2023 = 83000
-share_of_crypto_deposits_on_polygon_network = 0.8
-share_of_clients_without_matic = 0.8
-fueling_amount = (expected_crypto_deposits_2023*share_of_crypto_deposits_on_polygon_network*share_of_clients_without_matic/(3*30))*polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()
+share_of_crypto_deposits_on_polygon_network = merged_df['matic_inflow_share'].mean()
+share_of_clients_without_matic = merged_df['matic_inflow_share_using_usdc'].mean()
+fueling_amount = (expected_crypto_deposits_2023*share_of_crypto_deposits_on_polygon_network*share_of_clients_without_matic/(3*30))*polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()*7
 fueling_threshold = fueling_amount/3
 
 fueling_amount = str(round(fueling_amount, 6))
@@ -57,4 +112,3 @@ def configure_gas_station(gas_threshold: str, gas_cap: str, max_gas_price: str):
     fireblocks.set_gas_station_configuration(gas_threshold=gas_threshold, gas_cap=gas_cap, max_gas_price=max_gas_price)
     
 gas_station_conf = configure_gas_station(fueling_threshold, fueling_amount, upper_threshold)
-
