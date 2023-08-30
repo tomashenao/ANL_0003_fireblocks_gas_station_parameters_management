@@ -64,13 +64,40 @@ merged_df.set_index('date', inplace=True)
 merged_df['matic_inflow_share'] = merged_df['matic_inflow_total_usd'] / merged_df.sum(axis=1)
 merged_df['matic_inflow_share_using_usdc'] = merged_df['usdc_inflow_total_usd'] / (merged_df['usdc_inflow_total_usd']+merged_df['matic_inflow_total_usd'])
 
-# Import csv with Polygon network fee data
-polygon_daily_avg_gas_prices = pd.DataFrame(pd.read_csv("/Users/tomhenra/Documents/Wenia/Risk Management/Gas Station Management/ANL_0003_fireblocks_gas_station_parameters_management/polygon_daily_avg_gas_price.csv"))
+# We import the data from CryptoQuant's Query
+queryid = '64dcdcb6cff19e0c797e4b85' #input query id 
 
-# Calculate the IQR (Interquartile Range)
-#q1 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.25)
-#q3 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.75)
-#iqr = q3 - q1
+url = "https://open-api.cryptoquant.com/open/v1/analytics/{}".format(queryid)
+data = (requests.get(url, headers=headers).json())
+
+#Defining Column Names for Dataframe
+column_data = data['result']['columns']
+column_labels = []
+for column_name in column_data:
+    column_labels.append(column_name['name'])
+    
+#creating Dataframe   
+results = data['result']['results']
+polygon_daily_avg_gas_prices = pd.DataFrame([results][0])
+polygon_daily_avg_gas_prices.columns = column_labels
+polygon_daily_avg_gas_prices = polygon_daily_avg_gas_prices.sort_values('day',ascending=True)
+
+print(polygon_daily_avg_gas_prices)
+
+# Calculate the IQR (Interquartile Range) of gas price in gwei
+q1 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.25)
+q3 = polygon_daily_avg_gas_prices['gas_price_in_gwei'].quantile(0.75)
+iqr_gwei = q3 - q1
+
+upper_threshold = q3 + 1.5*iqr_gwei
+upper_threshold = str(round(upper_threshold, 6))
+
+# Calculate the IQR (Interquartile Range) of average transaction fee amount
+q1 = polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].quantile(0.25)
+q3 = polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].quantile(0.75)
+iqr_avg_trx = q3 - q1
+
+avg_trx_fee_outlier = q3 + 1.5*iqr_avg_trx
 
 # Import MATIC OHLCV prices from all exchanges from CryptoQuant API
 url = "https://api.cryptoquant.com/v1/erc20/market-data/price-ohlcv?token=matic&window=hour&limit=1"
@@ -78,18 +105,21 @@ data_list = requests.get(url, headers=headers).json()['result']['data']
 
 # Calculate MATIC last hour close price
 matic_latest_close_price = float(pd.DataFrame(data_list).at[0, 'close'])
-# Calculate the upper outlier threshold (25USD / MATIC price). In this case we use 15USD which is consider the 
+# Calculate the upper outlier threshold (15USD / MATIC price). In this case we use 15USD which is consider the 
 # price of the labor hour of an operations worker and we turn this to MATIC Gwei.
-upper_threshold = str(math.ceil((15/matic_latest_close_price) * 1000000000))
-
-print(upper_threshold)
+#upper_threshold = str(math.ceil((15/matic_latest_close_price) * 1000000000))
 
 # Calculate the fueling amount
-expected_crypto_deposits_2023 = 83000
-share_of_crypto_deposits_on_polygon_network = merged_df['matic_inflow_share'].mean()
-share_of_clients_without_matic = merged_df['matic_inflow_share_using_usdc'].mean()
-fueling_amount = (expected_crypto_deposits_2023*share_of_crypto_deposits_on_polygon_network*share_of_clients_without_matic/(3*30))*polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()*7
-fueling_threshold = fueling_amount/3
+expected_monthly_crypto_deposits_2023 = 17000
+expected_monthly_wenia_users = 14000
+expected_monthly_deposits_by_user = expected_monthly_crypto_deposits_2023/expected_monthly_wenia_users
+#share_of_crypto_deposits_on_polygon_network = merged_df['matic_inflow_share'].mean()
+#share_of_clients_without_matic = merged_df['matic_inflow_share_using_usdc'].mean()
+#fueling_amount = (expected_monthly_crypto_deposits_2023*share_of_crypto_deposits_on_polygon_network*share_of_clients_without_matic/(3*30))*polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()*7
+fueling_amount = avg_trx_fee_outlier
+fueling_threshold = polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()*1.5
+
+print(fueling_amount/(polygon_daily_avg_gas_prices['avg_transaction_fee_amount'].mean()*expected_monthly_deposits_by_user))
 
 fueling_amount = str(round(fueling_amount, 6))
 fueling_threshold = str(round(fueling_threshold, 6))
@@ -97,6 +127,7 @@ fueling_threshold = str(round(fueling_threshold, 6))
 print(upper_threshold)
 print(fueling_amount)
 print(fueling_threshold)
+
 
 api_secret = open('/Users/tomhenra/Documents/Wenia/Risk Management/Gas Station Management/ANL_0003_fireblocks_gas_station_parameters_management/sweeping_fireblocks.key', 'r').read()
 api_key = '567af12e-48cb-d54e-e4c0-27c7c5ba671d'
